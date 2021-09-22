@@ -9,6 +9,9 @@ use sarus::{
     jit::{self, JIT},
     parser, sarus_std_lib,
 };
+
+use crate::highligher::MemoizedSyntaxHighlighter;
+
 extern "C" fn format(ret: *mut i8, format: *const i8, x: f64) -> *const i8 {
     let s = unsafe { CStr::from_ptr(format).to_str().unwrap() };
     let formatted = SimpleCurlyFormat.format(s, &[x]).unwrap();
@@ -80,35 +83,24 @@ extern "C" fn f64vec_drop(vec: *mut MyObject) {
 }
 
 const DEFAULT_CODE: &str = r#"
+
 extern fn label(ui: &, str: &) -> () {}
 extern fn button(ui: &, str: &) -> (pressed: bool) {}
 extern fn slider(ui: &, s: &, x: f64, range_btm: f64, range_top: f64) -> (y: f64) {}
 extern fn format(ret: &, format: &, x: f64) -> (r: &) {}
-extern fn f64vec() -> (r: &) {}
-extern fn f64vec_push(vec: &, val: f64) -> () {}
-extern fn f64vec_get(vec: &, idx: i64) -> (r: f64) {}
-extern fn f64vec_drop(vec: &) -> () {}
+
+fn f_to_c(f: f64) -> (c: f64) {
+    c = (f - 32.0) * 5.0/9.0
+}
+
+fn c_to_f(c: f64) -> (f: f64) {
+    f = (c * 9.0/5.0) + 32.0
+}
 
 fn main(ui: &, x: &[f64]) -> () {
-    label(ui, "HELLO")
-    if button(ui, "increment") {
-        x[0] = x[0] + 1.0
-    }
-    if button(ui, "decrement") {
-        x[0] = x[0] - 1.0
-    }
-    label(ui, "HELLO")
-    label(ui, format([" "; 100], "Value: {}", x[0]))
-    if button(ui, "decrement by 10") {
-        x[0] = x[0] - 10.0
-    }
-    x[0] = slider(ui, "Slider", x[0], 0.0, 100.0)
-    vec = f64vec()
-    f64vec_push(vec, x[0])
-    f64vec_push(vec, x[0] * 10.0)
-    label(ui, format([" "; 100], "Vec Value 0: {}", f64vec_get(vec, 0)))
-    label(ui, format([" "; 100], "Vec Value 1: {}", f64vec_get(vec, 1)))
-    f64vec_drop(vec)
+    label(ui, "Fahrenheit / Celsius converter")
+    x[0] = c_to_f(slider(ui, "Celsius", f_to_c(x[0]), -200.0, 300.0))
+    x[0] = slider(ui, "Fahrenheit", x[0], -200.0, 300.0)
 }
 
 "#;
@@ -143,6 +135,7 @@ pub struct SarusEgui {
     func: Option<extern "C" fn(&mut Ui, &mut [f64; 4])>,
     code: String,
     errors: String,
+    highlighter: MemoizedSyntaxHighlighter,
 }
 
 impl Default for SarusEgui {
@@ -154,6 +147,7 @@ impl Default for SarusEgui {
             func: None,
             code: DEFAULT_CODE.to_owned(),
             errors: String::new(),
+            highlighter: Default::default(),
         }
     }
 }
@@ -211,6 +205,7 @@ impl epi::App for SarusEgui {
             func,
             code,
             errors,
+            highlighter,
         } = self;
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -235,7 +230,7 @@ impl epi::App for SarusEgui {
         egui::CentralPanel::default().show(ctx, |ui| {
             if ui.button("Compile").clicked() {
                 *errors = String::from("");
-                *func = match compile(&code) {
+                *func = match compile(&code.replace("\r\n", "\n")) {
                     Ok(mut jit) => match jit.get_func("main") {
                         Ok(func_ptr) => unsafe {
                             Some(mem::transmute::<
@@ -254,12 +249,22 @@ impl epi::App for SarusEgui {
                     }
                 }
             }
+            let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
+                let mut layout_job =
+                    highlighter.highlight(ui.visuals().dark_mode, string, "rs".into());
+                layout_job.wrap_width = wrap_width;
+                ui.fonts().layout_job(layout_job)
+            };
+
+            ui.visuals_mut().extreme_bg_color = egui::Color32::from_rgb(39, 40, 34);
             ui.add(
                 egui::TextEdit::multiline(code)
                     .desired_width(f32::INFINITY)
                     .lock_focus(true)
-                    .text_style(egui::TextStyle::Monospace), // for cursor height
+                    .text_style(egui::TextStyle::Monospace)
+                    .layouter(&mut layouter), // for cursor height
             );
+            ui.visuals_mut().extreme_bg_color = egui::Color32::from_rgb(20, 20, 20);
             ui.add(
                 egui::TextEdit::multiline(errors)
                     .desired_width(f32::INFINITY)

@@ -22,14 +22,14 @@ anyhow = "1.0.43"
 
 [features]
 default = []
-http = ["eframe/http"] # Enable if you want to do http requests
+#http = ["eframe/http"] # Enable if you want to do http requests
 persistence = ["eframe/persistence", "serde"] # Enable if you want to persist app state on shutdown
 
 
 [patch.crates-io]
 
 # If you want to use the bleeding edge version of `egui`:
-# eframe = { git = "https://github.com/emilk/egui", branch = "master" }
+eframe = { git = "https://github.com/emilk/egui", branch = "master" }
 
 # If you fork https://github.com/emilk/egui you can test with:
 # eframe = { path = "../egui/eframe" }
