@@ -1,32 +1,13 @@
-use std::{ffi::CStr, mem};
+use std::{cell::RefCell, ffi::CStr, mem, rc::Rc};
 
 use dynfmt::{Format, SimpleCurlyFormat};
 use eframe::{
     egui::{self, FontDefinitions, FontFamily, Ui},
     epi,
 };
-use sarus::{
-    jit::{self, JIT},
-    parser, sarus_std_lib,
-};
+use sarus::{default_std_jit_from_code, jit::JIT, parser, sarus_std_lib};
 
 use crate::highligher::MemoizedSyntaxHighlighter;
-
-extern "C" fn format(ret: *mut i8, format: *const i8, x: f64) -> *const i8 {
-    let s = unsafe { CStr::from_ptr(format).to_str().unwrap() };
-    let formatted = SimpleCurlyFormat.format(s, &[x]).unwrap();
-    let bytes = formatted.as_bytes();
-    for (i, c) in bytes.iter().enumerate() {
-        unsafe {
-            *ret.offset(i as isize) = *c as i8;
-        }
-    }
-    unsafe {
-        *ret.offset(bytes.len() as isize) = '\0' as i8;
-    }
-
-    ret
-}
 
 extern "C" fn label(ui: &mut Ui, s: *const i8) {
     let s = unsafe { CStr::from_ptr(s).to_str().unwrap() };
@@ -45,49 +26,15 @@ extern "C" fn slider(ui: &mut Ui, s: *const i8, x: f64, range_btm: f64, range_to
     slider_f32 as f64
 }
 
-struct MyObject {
-    pub v: Vec<f64>,
-}
-
-impl Drop for MyObject {
-    fn drop(&mut self) {
-        //println!("dropping MyObject");
-    }
-}
-
-extern "C" fn f64vec() -> *mut MyObject {
-    Box::into_raw(Box::new(MyObject { v: Vec::new() }))
-}
-
-extern "C" fn f64vec_push(vec: *mut MyObject, val: f64) {
-    let vec = unsafe {
-        assert!(!vec.is_null());
-        &mut *vec
-    };
-    vec.v.push(val);
-}
-
-extern "C" fn f64vec_get(vec: *const MyObject, idx: i64) -> f64 {
-    let vec = unsafe {
-        assert!(!vec.is_null());
-        &*vec
-    };
-    vec.v[idx as usize]
-}
-
-extern "C" fn f64vec_drop(vec: *mut MyObject) {
-    unsafe {
-        assert!(!vec.is_null());
-        Box::from_raw(vec)
-    };
-}
-
 const DEFAULT_CODE: &str = r#"
 
-extern fn label(ui: &, str: &) -> () {}
-extern fn button(ui: &, str: &) -> (pressed: bool) {}
-extern fn slider(ui: &, s: &, x: f64, range_btm: f64, range_top: f64) -> (y: f64) {}
-extern fn format(ret: &, format: &, x: f64) -> (r: &) {}
+struct Ui {
+    ui: &,
+}
+
+extern fn label(self: Ui, str: &) -> () {}
+extern fn button(self: Ui, str: &) -> (pressed: bool) {}
+extern fn slider(self: Ui, s: &, x: f64, range_btm: f64, range_top: f64) -> (y: f64) {}
 
 fn f_to_c(f: f64) -> (c: f64) {
     c = (f - 32.0) * 5.0/9.0
@@ -97,28 +44,29 @@ fn c_to_f(c: f64) -> (f: f64) {
     f = (c * 9.0/5.0) + 32.0
 }
 
-fn main(ui: &, x: &[f64]) -> () {
-    label(ui, "Fahrenheit / Celsius converter")
-    x[0] = c_to_f(slider(ui, "Celsius", f_to_c(x[0]), -200.0, 300.0))
-    x[0] = slider(ui, "Fahrenheit", x[0], -200.0, 300.0)
+fn main(ui: Ui, x: &[f64]) -> () {
+    ui.label("Celsius / Fahrenheit converter")
+    x[0] = ui.slider("Celsius", x[0], -200.0, 300.0)
+    x[0] = f_to_c(ui.slider("Fahrenheit", c_to_f(x[0]), -200.0, 300.0))
+    if ui.button("freezing") {
+        x[0] = 0.0
+    }
+    if ui.button("boiling") {
+        x[0] = 100.0
+    }
 }
 
 "#;
 
 fn compile(code: &str) -> anyhow::Result<JIT> {
-    let mut jit = jit::JIT::new(&[
-        ("label", label as *const u8),
-        ("button", button as *const u8),
-        ("format", format as *const u8),
-        ("f64vec", f64vec as *const u8),
-        ("f64vec_push", f64vec_push as *const u8),
-        ("f64vec_get", f64vec_get as *const u8),
-        ("f64vec_drop", f64vec_drop as *const u8),
-        ("slider", slider as *const u8),
-    ]);
-    let ast = parser::program(code)?;
-    let ast = sarus_std_lib::append_std_funcs(ast);
-    jit.translate(ast.clone())?;
+    let mut jit = default_std_jit_from_code(
+        code,
+        Some(vec![
+            ("Ui.label", label as *const u8),
+            ("Ui.button", button as *const u8),
+            ("Ui.slider", slider as *const u8),
+        ]),
+    )?;
     Ok(jit)
 }
 
