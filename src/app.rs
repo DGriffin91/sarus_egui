@@ -1,40 +1,18 @@
-use std::{cell::RefCell, ffi::CStr, mem, rc::Rc};
+use std::mem;
 
-use dynfmt::{Format, SimpleCurlyFormat};
 use eframe::{
     egui::{self, FontDefinitions, FontFamily, Ui},
     epi,
 };
-use sarus::{default_std_jit_from_code, jit::JIT, parser, sarus_std_lib};
+use sarus::{default_std_jit_from_code_with_importer, jit::JIT};
 
-use crate::highligher::MemoizedSyntaxHighlighter;
-
-extern "C" fn label(ui: &mut Ui, s: *const i8) {
-    let s = unsafe { CStr::from_ptr(s).to_str().unwrap() };
-    ui.label(s);
-}
-
-extern "C" fn button(ui: &mut Ui, s: *const i8) -> bool {
-    let s = unsafe { CStr::from_ptr(s).to_str().unwrap() };
-    ui.button(s).clicked()
-}
-
-extern "C" fn slider(ui: &mut Ui, s: *const i8, x: f64, range_btm: f64, range_top: f64) -> f64 {
-    let s = unsafe { CStr::from_ptr(s).to_str().unwrap() };
-    let mut slider_f32 = x as f32;
-    ui.add(egui::Slider::new(&mut slider_f32, range_btm as f32..=range_top as f32).text(s));
-    slider_f32 as f64
-}
+use crate::{highligher::MemoizedSyntaxHighlighter, sarus_egui_lib::append_egui};
 
 const DEFAULT_CODE: &str = r#"
 
 struct Ui {
     ui: &,
 }
-
-extern fn label(self: Ui, str: &) -> () {}
-extern fn button(self: Ui, str: &) -> (pressed: bool) {}
-extern fn slider(self: Ui, s: &, x: f64, range_btm: f64, range_top: f64) -> (y: f64) {}
 
 fn f_to_c(f: f64) -> (c: f64) {
     c = (f - 32.0) * 5.0/9.0
@@ -59,14 +37,9 @@ fn main(ui: Ui, x: &[f64]) -> () {
 "#;
 
 fn compile(code: &str) -> anyhow::Result<JIT> {
-    let mut jit = default_std_jit_from_code(
-        code,
-        Some(vec![
-            ("Ui.label", label as *const u8),
-            ("Ui.button", button as *const u8),
-            ("Ui.slider", slider as *const u8),
-        ]),
-    )?;
+    let jit = default_std_jit_from_code_with_importer(&code, |ast, jit_builder| {
+        append_egui(ast, jit_builder);
+    })?;
     Ok(jit)
 }
 
@@ -203,21 +176,31 @@ impl epi::App for SarusEgui {
                 layout_job.wrap_width = wrap_width;
                 ui.fonts().layout_job(layout_job)
             };
-
-            ui.visuals_mut().extreme_bg_color = egui::Color32::from_rgb(39, 40, 34);
-            ui.add(
-                egui::TextEdit::multiline(code)
-                    .desired_width(f32::INFINITY)
-                    .lock_focus(true)
-                    .text_style(egui::TextStyle::Monospace)
-                    .layouter(&mut layouter), // for cursor height
-            );
-            ui.visuals_mut().extreme_bg_color = egui::Color32::from_rgb(20, 20, 20);
-            ui.add(
-                egui::TextEdit::multiline(errors)
-                    .desired_width(f32::INFINITY)
-                    .text_style(egui::TextStyle::Monospace), // for cursor height
-            );
+            egui::ScrollArea::vertical()
+                .enable_scrolling(true)
+                .id_source("log")
+                .show(ui, |ui| {
+                    ui.visuals_mut().extreme_bg_color = egui::Color32::from_rgb(20, 20, 20);
+                    ui.add(
+                        egui::TextEdit::multiline(errors)
+                            .desired_width(f32::INFINITY)
+                            .text_style(egui::TextStyle::Monospace), // for cursor height
+                    );
+                });
+            egui::ScrollArea::vertical()
+                .enable_scrolling(true)
+                .always_show_scroll(true)
+                .id_source("code_editor")
+                .show(ui, |ui| {
+                    ui.visuals_mut().extreme_bg_color = egui::Color32::from_rgb(39, 40, 34);
+                    ui.add(
+                        egui::TextEdit::multiline(code)
+                            .desired_width(f32::INFINITY)
+                            .lock_focus(true)
+                            .text_style(egui::TextStyle::Monospace)
+                            .layouter(&mut layouter), // for cursor height
+                    );
+                });
         });
     }
 
